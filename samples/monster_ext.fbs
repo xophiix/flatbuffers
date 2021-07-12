@@ -1,0 +1,47 @@
+// Example IDL file for our monster's schema.
+
+namespace XophiiX.Sample;
+
+enum Color:byte { Red = 0, Green, Blue = 2 }
+
+union Equipment { 
+  WP:Weapon,
+  S:string
+} // Optionally add more tables.
+
+struct Vec3 {
+  x:float;
+  y:float;
+  z:float;
+}
+
+table MonsterEx {
+  pos:Vec3;
+  energy:float = 2.0;
+  mana:short = 150;
+  hp:short = 100;
+  name:string;
+  friendly:bool = false (deprecated);
+  inventory:[ubyte];
+  color:Color = Blue;
+  main_weapon:Weapon;
+  weapons:[Weapon];
+  equipped:Equipment;
+  // equipped_list:[Equipment];
+  path:[Vec3];
+  big_weapons:[BigWeapon];
+}
+
+table Weapon {
+  name:string;
+  damage:short;
+}
+
+
+table BigWeapon {
+  name:string;
+  damage:int64;
+  child:Weapon;
+}
+
+root_type MonsterEx;
