@@ -798,11 +798,11 @@ class LuaGenerator : public BaseGenerator {
         }
         case BASE_TYPE_UNION: {
           code += "    local _" + field.name + "_type = o." + camel_name +
-              " == null ? " + WrapInNameSpace(*field.value.type.enum_def) +
-              ".NONE : " + "o." + camel_name + ".Type\n";
+              " == null and " + WrapInNameSpace(*field.value.type.enum_def) +
+              ".NONE or " + "o." + camel_name + ".Type\n";
           code +=
               "    local _" + field.name + " = o." + camel_name +
-              " == null ? 0 : " + WrapInNameSpace(*field.value.type.enum_def) + ".Union" +
+              " == null and 0 or " + WrapInNameSpace(*field.value.type.enum_def) + ".Union" +
               ".Pack(builder, o." + camel_name + ")\n";
           break;
         }
@@ -1118,9 +1118,8 @@ class LuaGenerator : public BaseGenerator {
 
       auto& code = *code_ptr;
       string enum_name = MakeCamel(enum_def.name, true);
-      string format = "";
-
-      format += "local dataTypeToClass = {}\n";
+      
+      code += "local dataTypeToClass = {}\n";
       for (auto it = enum_def.Vals().begin(); it != enum_def.Vals().end(); ++it) {
         auto &ev = **it;
         if (ev.IsZero())
@@ -1128,21 +1127,18 @@ class LuaGenerator : public BaseGenerator {
         
         auto value = enum_def.ToString(ev);        
         if (ev.union_type.base_type == BASE_TYPE_STRING)
-          format += "dataTypeToClass[" + value + "] = string\n";
+          code += "dataTypeToClass[" + value + "] = string\n";
         else
-          format += "dataTypeToClass[" + value + "] = require('" + GetNamespace(ev.union_type) + "')\n";
+          code += "dataTypeToClass[" + value + "] = require('" +
+                  GetNamespace(ev.union_type) + "')\n";
       }
 
-      format += "%s.__dataTypeToClass = dataTypeToClass\n\n"\
-        "%s.Union = {\n"\
+      code += enum_name + ".__dataTypeToClass = dataTypeToClass\n\n";
+      code += enum_name + ".Union = {\n"\
         "\t__ctor = function (this)\n"\
         "\t\tthis.Type = 0\n"
         "\t\tthis.Value = nil\n"
         "\tend\n}\n";
-
-      char output[2048];
-      sprintf(output, format.c_str(), enum_name.c_str(), enum_name.c_str()); 
-      code += output;
     }
 
     // Returns the function name that is able to read a value of the given
