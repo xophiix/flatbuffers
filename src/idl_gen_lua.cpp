@@ -797,12 +797,13 @@ class LuaGenerator : public BaseGenerator {
           break;
         }
         case BASE_TYPE_UNION: {
+          string enum_name = TypeNameWithNamespace(field);
           code += "    local _" + field.name + "_type = o." + camel_name +
-              " == null and " + WrapInNameSpace(*field.value.type.enum_def) +
-              ".NONE or " + "o." + camel_name + ".Type\n";
+                  " == null and require('" + enum_name + 
+              "').NONE or " + "o." + camel_name + ".Type\n";
           code +=
               "    local _" + field.name + " = o." + camel_name +
-              " == null and 0 or " + WrapInNameSpace(*field.value.type.enum_def) + ".Union" +
+                  " == null and 0 or require('" + enum_name + "').Union" +
               ".Pack(builder, o." + camel_name + ")\n";
           break;
         }
@@ -914,10 +915,10 @@ class LuaGenerator : public BaseGenerator {
       code += indent + varialbe_name + " = ";
     }
 
-    string enum_def_name = enum_def.name;
+    string enum_def_name = "require('" + enum_def.defined_namespace->GetFullyQualifiedName(enum_def.name) + "')";
 
     code += enum_def_name + ".Union()\n";
-    code += indent + varialbe_name + ".Type = self:" + camel_name + "Type" +
+    code += indent + varialbe_name + ".Type = self:" + camel_name + "Type()" +
             type_suffix + "\n";
 
     code += indent + "local t = " + enum_def_name + ".__dataTypeToClass[o." +
