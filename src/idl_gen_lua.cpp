@@ -16,9 +16,9 @@
 
 // independent from idl_parser, since this code is not needed for most clients
 
+#include <cstdio>
 #include <string>
 #include <unordered_set>
-#include <cstdio>
 
 #include "flatbuffers/code_generators.h"
 #include "flatbuffers/flatbuffers.h"
@@ -284,6 +284,34 @@ class LuaGenerator : public BaseGenerator {
     code += EndFunc;
   }
 
+  void GetUnionFieldWithType(const StructDef &struct_def, const FieldDef &field,
+                             std::string *code_ptr) {
+    /*
+      local data = this:Data()
+      if data ~= nil then
+          local type_inst = type.New()
+          type_inst:Init(data.bytes, data.pos)
+          return type_inst
+      end
+    */
+    std::string &code = *code_ptr;
+    GenReceiver(struct_def, code_ptr);
+    string field_name = MakeCamel(NormalizedName(field));
+    code += field_name + "WithType(type)\n";
+    code += std::string(Indent) + "local value = self:" + field_name +
+            "()\n";
+    code += std::string(Indent) + "if value ~= nil then\n";
+    code += std::string(Indent) + Indent +
+            "local type_inst = type.New()\n";
+    code += std::string(Indent) + Indent +
+            "type_inst:Init(value.bytes, value.pos)\n";
+    code += std::string(Indent) + Indent +
+            "return type_inst\n";
+
+    code += std::string(Indent) + End;
+    code += EndFunc;
+  }
+
   // Get the value of a vector's struct member.
   void GetMemberOfVectorOfStruct(const StructDef &struct_def,
                                  const FieldDef &field, std::string *code_ptr) {
@@ -501,7 +529,10 @@ class LuaGenerator : public BaseGenerator {
           }
           break;
         }
-        case BASE_TYPE_UNION: GetUnionField(struct_def, field, code_ptr); break;
+        case BASE_TYPE_UNION:
+          GetUnionField(struct_def, field, code_ptr);
+          GetUnionFieldWithType(struct_def, field, code_ptr);
+          break;
         default: FLATBUFFERS_ASSERT(0);
       }
     }
@@ -579,7 +610,7 @@ class LuaGenerator : public BaseGenerator {
     code += "\n--Object Base API\n";
     // UnPack
     code += "function " + meta_name + ":UnPack()\n";
-    code += "    local o = " + class_name + ".T()\n";
+    code += "    local o = " + class_name + ".T.New()\n";
     code += "    self:UnPackTo(o)\n";
     code += "    return o\n";
     code += "end\n\n";
@@ -640,10 +671,10 @@ class LuaGenerator : public BaseGenerator {
         case BASE_TYPE_VECTOR:
           code += string(Indent) + "length = self:" + camel_name + "Length()\n";
           if (field.value.type.element == BASE_TYPE_UNION) {
-            code += start + "{}\n";            
-            code += std::string(Indent) +
-                    "for j = 1, length do\n";
-            GenUnionUnPack_ObjectAPI(*field.value.type.enum_def, code_ptr, camel_name, true);            
+            code += start + "{}\n";
+            code += std::string(Indent) + "for j = 1, length do\n";
+            GenUnionUnPack_ObjectAPI(*field.value.type.enum_def, code_ptr,
+                                     camel_name, true);
             code += std::string(Indent) + EndFunc + "\n";
           } else if (field.value.type.element != BASE_TYPE_UTYPE) {
             auto fixed = field.value.type.struct_def == nullptr;
@@ -651,7 +682,8 @@ class LuaGenerator : public BaseGenerator {
             code += std::string(Indent) + "for _j = 1, length do\n";
             code += std::string(Indent) + Indent +
                     "local item = self:" + camel_name + "(_j)\n";
-            code += std::string(Indent) + Indent + "o." + camel_name + "[_j] = ";
+            code +=
+                std::string(Indent) + Indent + "o." + camel_name + "[_j] = ";
 
             if (!fixed) {
               code += "item ~= nil and item:UnPack() or nil";
@@ -684,24 +716,24 @@ class LuaGenerator : public BaseGenerator {
     for (auto it = struct_def.fields.vec.begin();
          it != struct_def.fields.vec.end(); ++it) {
       auto &field = **it;
-      if (field.deprecated)
-        continue;
+      if (field.deprecated) continue;
 
-      auto camel_name = MakeCamel(field.name);      
+      auto camel_name = MakeCamel(field.name);
       // pre
       switch (field.value.type.base_type) {
         case BASE_TYPE_STRUCT: {
           if (!field.value.type.struct_def->fixed) {
-            code += string(Indent) + "local _" + field.name + " = o." + camel_name +
-                    " == nil and 0 or " + MakeCamel(GenTypeGet(field.value.type)) +
+            code += string(Indent) + "local _" + field.name + " = o." +
+                    camel_name + " == nil and 0 or " +
+                    MakeCamel(GenTypeGet(field.value.type)) +
                     ".Pack(builder, o." + camel_name + ");\n";
           }
           break;
         }
         case BASE_TYPE_STRING: {
-          code += string(Indent) + "local _" + field.name + " = o." + camel_name +
-                  " == nil and 0 or builder:CreateString(o." + camel_name +
-                  ")\n";
+          code += string(Indent) + "local _" + field.name + " = o." +
+                  camel_name + " == nil and 0 or builder:CreateString(o." +
+                  camel_name + ")\n";
           break;
         }
         case BASE_TYPE_VECTOR: {
@@ -748,49 +780,61 @@ class LuaGenerator : public BaseGenerator {
           end
 
           */
-         code += string(Indent) + "local _" + field.name + " = 0\n";
-         code += string(Indent) + "if o." + camel_name + "~= nil then\n";
-         string length_var = "__" + field.name + "_length";
-         code += string(Indent) + Indent + "local " + length_var + " = #o." + camel_name + "\n";
-         
-         if (IsScalar(field.value.type.element) || IsStruct(field.value.type)) {                        
-            code += string(Indent) + Indent + class_name + ".Start" + field.name + "Vector(builder, " + length_var + ")\n";      
-            code += string(Indent) + Indent + "for _j = " + length_var + ", 1, -1 do\n";
+          code += string(Indent) + "local _" + field.name + " = 0\n";
+          code += string(Indent) + "if o." + camel_name + "~= nil then\n";
+          string length_var = "__" + field.name + "_length";
+          code += string(Indent) + Indent + "local " + length_var + " = #o." +
+                  camel_name + "\n";
+
+          if (IsScalar(field.value.type.element) ||
+              IsStruct(field.value.type)) {
+            code += string(Indent) + Indent + class_name + ".Start" +
+                    field.name + "Vector(builder, " + length_var + ")\n";
+            code += string(Indent) + Indent + "for _j = " + length_var +
+                    ", 1, -1 do\n";
             code += string(Indent) + Indent + Indent;
             if (IsScalar(field.value.type.element))
-              code += "builder:Prepend" + MakeCamel(GenTypeBasic(field.value.type.element)) + "(o." + camel_name + "[_j])\n"; 
+              code += "builder:Prepend" +
+                      MakeCamel(GenTypeBasic(field.value.type.element)) +
+                      "(o." + camel_name + "[_j])\n";
             else
-              code += "builder:PrependStruct(" + MakeCamel(GenTypeGet(field.value.type)) + ".Pack(builder, o." + camel_name + "[_j]))\n"; 
+              code += "builder:PrependStruct(require('" +
+                      TypeNameWithNamespace(field) + "').Pack(builder, o." +
+                      camel_name + "[_j]))\n";
             code += string(Indent) + Indent + "end\n";
-            
-         } else {
-           string offset_array_var = "__" + field.name + "_array";
-           code += string(Indent) + Indent + "local " + offset_array_var + " = {}\n";
-           code += string(Indent) + Indent + "for i, v in ipairs(o." + camel_name + ") do\n";
-           code += string(Indent) + Indent + Indent + offset_array_var + "[i] = ";
-           switch (field.value.type.element) {
-             case BASE_TYPE_STRING:
-              code += "builder:CreateString(v)\n";
-              break;
-            case BASE_TYPE_STRUCT:
-              code += GenTypeGet(field.value.type) + ".Pack(builder, v)\n";
-              break;
-            default:
-              code += "**not supported**\n";
-              break;
-           }
 
-           code += string(Indent) + Indent + "end\n";
+          } else {
+            string offset_array_var = "__" + field.name + "_array";
+            code += string(Indent) + Indent + "local " + offset_array_var +
+                    " = {}\n";
+            code += string(Indent) + Indent + "for i, v in ipairs(o." +
+                    camel_name + ") do\n";
+            code +=
+                string(Indent) + Indent + Indent + offset_array_var + "[i] = ";
+            switch (field.value.type.element) {
+              case BASE_TYPE_STRING: code += "builder:CreateString(v)\n"; break;
+              case BASE_TYPE_STRUCT:
+                code += "require('" + TypeNameWithNamespace(field) +
+                        "').Pack(builder, v)\n";
+                break;
+              default: code += "**not supported**\n"; break;
+            }
 
-           code += string(Indent) + Indent + class_name + ".Start" + field.name + "Vector(builder, " + length_var + ")\n";      
-            code += string(Indent) + Indent + "for _j = " + length_var + ", 1, -1 do\n";
-            code += string(Indent) + Indent + Indent;            
-            code += "builder:PrependUOffsetTRelative(" + offset_array_var + "[_j]))\n"; 
             code += string(Indent) + Indent + "end\n";
-         }  
 
-         code += string(Indent) + Indent + "_" + field.name + " = builder:EndVector(" + length_var + ")\n";
-        code += string(Indent) + "end\n\n";
+            code += string(Indent) + Indent + class_name + ".Start" +
+                    field.name + "Vector(builder, " + length_var + ")\n";
+            code += string(Indent) + Indent + "for _j = " + length_var +
+                    ", 1, -1 do\n";
+            code += string(Indent) + Indent + Indent;
+            code += "builder:PrependUOffsetTRelative(" + offset_array_var +
+                    "[_j])\n";
+            code += string(Indent) + Indent + "end\n";
+          }
+
+          code += string(Indent) + Indent + "_" + field.name +
+                  " = builder:EndVector(" + length_var + ")\n";
+          code += string(Indent) + "end\n\n";
         }
         case BASE_TYPE_ARRAY: {
           // not supported
@@ -799,12 +843,11 @@ class LuaGenerator : public BaseGenerator {
         case BASE_TYPE_UNION: {
           string enum_name = TypeNameWithNamespace(field);
           code += "    local _" + field.name + "_type = o." + camel_name +
-                  " == null and require('" + enum_name + 
-              "').NONE or " + "o." + camel_name + ".Type\n";
-          code +=
-              "    local _" + field.name + " = o." + camel_name +
+                  " == null and require('" + enum_name + "').NONE or " + "o." +
+                  camel_name + ".Type\n";
+          code += "    local _" + field.name + " = o." + camel_name +
                   " == null and 0 or require('" + enum_name + "').Union" +
-              ".Pack(builder, o." + camel_name + ")\n";
+                  ".Pack(builder, o." + camel_name + ")\n";
           break;
         }
         default: break;
@@ -812,9 +855,10 @@ class LuaGenerator : public BaseGenerator {
     }
 
     if (struct_def.fixed) {
-      code += std::string(Indent) + "return " + class_name + ".Create" + class_name + "(builder";
+      code += std::string(Indent) + "return " + class_name + ".Create" +
+              class_name + "(builder";
       for (auto it = struct_def.fields.vec.begin();
-          it != struct_def.fields.vec.end(); ++it) {
+           it != struct_def.fields.vec.end(); ++it) {
         auto &field = **it;
         if (field.deprecated) continue;
 
@@ -850,39 +894,44 @@ class LuaGenerator : public BaseGenerator {
       }
       code += ")\n";
     } else {
-       code += std::string(Indent) + class_name + ".Start(builder)\n";
+      code += std::string(Indent) + class_name + ".Start(builder)\n";
       for (auto it = struct_def.fields.vec.begin();
-          it != struct_def.fields.vec.end(); ++it) {
+           it != struct_def.fields.vec.end(); ++it) {
         auto &field = **it;
         if (field.deprecated) continue;
         auto camel_name = MakeCamel(field.name);
-        
+
         switch (field.value.type.base_type) {
           case BASE_TYPE_STRUCT: {
             if (field.value.type.struct_def->fixed) {
-              code += string(Indent) + class_name + ".Add" + camel_name + "(builder, " +
-                      GenTypeGet(field.value.type) + ".Pack(builder, o." +
-                      camel_name + "))\n";
+              code += string(Indent) + class_name + ".Add" + camel_name +
+                      "(builder, " + GenTypeGet(field.value.type) +
+                      ".Pack(builder, o." + camel_name + "))\n";
             } else {
-              code += string(Indent) + class_name + ".Add" + camel_name + "(builder, _" + field.name + ")\n";
+              code += string(Indent) + class_name + ".Add" + camel_name +
+                      "(builder, _" + field.name + ")\n";
             }
             break;
           }
           case BASE_TYPE_STRING: FLATBUFFERS_FALLTHROUGH();  // fall thru
           case BASE_TYPE_ARRAY: FLATBUFFERS_FALLTHROUGH();   // fall thru
           case BASE_TYPE_VECTOR: {
-            code += string(Indent) + class_name + ".Add" + camel_name + "(builder, _" + field.name + ")\n";
+            code += string(Indent) + class_name + ".Add" + camel_name +
+                    "(builder, _" + field.name + ")\n";
             break;
           }
           case BASE_TYPE_UTYPE: break;
           case BASE_TYPE_UNION: {
-            code += string(Indent) + class_name + ".Add" + camel_name + "Type(builder, _" + field.name + "_type)\n";
-            code += string(Indent) + class_name + ".Add" + camel_name + "(builder, _" + field.name + ")\n";
+            code += string(Indent) + class_name + ".Add" + camel_name +
+                    "Type(builder, _" + field.name + "_type)\n";
+            code += string(Indent) + class_name + ".Add" + camel_name +
+                    "(builder, _" + field.name + ")\n";
             break;
           }
           // scalar
           default: {
-            code += string(Indent) + class_name + ".Add" + camel_name + "(builder, o." + camel_name + ")\n";
+            code += string(Indent) + class_name + ".Add" + camel_name +
+                    "(builder, o." + camel_name + ")\n";
             break;
           }
         }
@@ -890,7 +939,7 @@ class LuaGenerator : public BaseGenerator {
 
       code += std::string(Indent) + "return " + class_name + ".End(builder)\n";
     }
-   
+
     code += "end\n\n";
   }
 
@@ -915,9 +964,11 @@ class LuaGenerator : public BaseGenerator {
       code += indent + varialbe_name + " = ";
     }
 
-    string enum_def_name = "require('" + enum_def.defined_namespace->GetFullyQualifiedName(enum_def.name) + "')";
+    string enum_def_name =
+        "require('" +
+        enum_def.defined_namespace->GetFullyQualifiedName(enum_def.name) + "')";
 
-    code += enum_def_name + ".Union()\n";
+    code += enum_def_name + ".Union.New()\n";
     code += indent + varialbe_name + ".Type = self:" + camel_name + "Type()" +
             type_suffix + "\n";
 
@@ -995,7 +1046,9 @@ class LuaGenerator : public BaseGenerator {
 
     string class_name = NormalizedName(struct_def);
     code += class_name + ".T = {\n";
-    code += string(Indent) + "__ctor__ = function (this)\n";
+    code += string(Indent) + "_mt = {},\n";
+    code += string(Indent) + "New = function ()\n";
+    code += string(Indent) + Indent + "local o = {}\n";
 
     for (auto it = struct_def.fields.vec.begin();
          it != struct_def.fields.vec.end(); ++it) {
@@ -1004,7 +1057,7 @@ class LuaGenerator : public BaseGenerator {
       if (field.deprecated) continue;
 
       auto camel_name = MakeCamel(field.name);
-      auto start = std::string(Indent) + Indent + "this." + camel_name + " = ";
+      auto start = std::string(Indent) + Indent + "o." + camel_name + " = ";
 
       switch (field.value.type.base_type) {
         case BASE_TYPE_STRUCT: {
@@ -1022,8 +1075,9 @@ class LuaGenerator : public BaseGenerator {
         }
 
         case BASE_TYPE_UTYPE: break;
-        case BASE_TYPE_UNION: {          
-          code += start + "require('" + TypeNameWithNamespace(field) + "').Union()\n";
+        case BASE_TYPE_UNION: {
+          code += start + "require('" + TypeNameWithNamespace(field) +
+                  "').Union.New()\n";
           break;
         }
         default: {
@@ -1032,138 +1086,139 @@ class LuaGenerator : public BaseGenerator {
         }
       }
     }
-    
+
+    code += string(Indent) + Indent + "setmetatable(o, {__index = " + class_name + ".T._mt})\n";
+    code += string(Indent) + Indent + "return o\n";
     code += string(Indent) + "end\n";
     code += "}\n";
   }
 
-    std::string GenDefaultValue(const FieldDef &field, bool enableLangOverrides)
-        const {
-      auto &value = field.value;
-      if (enableLangOverrides) {
-        // handles both enum case and vector of enum case
-        if (value.type.enum_def != nullptr &&
-            value.type.base_type != BASE_TYPE_UNION) {
-          return GenEnumDefaultValue(field);
-        }
-      }
-
-      auto longSuffix = "";
-      switch (value.type.base_type) {
-        case BASE_TYPE_BOOL: return value.constant == "0" ? "false" : "true";
-        case BASE_TYPE_ULONG: return value.constant;
-        case BASE_TYPE_UINT:
-        case BASE_TYPE_LONG: return value.constant + longSuffix;
-        default:          
-            return value.constant;
+  std::string GenDefaultValue(const FieldDef &field,
+                              bool enableLangOverrides) const {
+    auto &value = field.value;
+    if (enableLangOverrides) {
+      // handles both enum case and vector of enum case
+      if (value.type.enum_def != nullptr &&
+          value.type.base_type != BASE_TYPE_UNION) {
+        return GenEnumDefaultValue(field);
       }
     }
 
-    std::string GenDefaultValue(const FieldDef &field) const {
-      return GenDefaultValue(field, true);
+    auto longSuffix = "";
+    switch (value.type.base_type) {
+      case BASE_TYPE_BOOL: return value.constant == "0" ? "false" : "true";
+      case BASE_TYPE_ULONG: return value.constant;
+      case BASE_TYPE_UINT:
+      case BASE_TYPE_LONG: return value.constant + longSuffix;
+      default: return value.constant;
+    }
+  }
+
+  std::string GenDefaultValue(const FieldDef &field) const {
+    return GenDefaultValue(field, true);
+  }
+
+  std::string GenEnumDefaultValue(const FieldDef &field) const {
+    auto &value = field.value;
+    FLATBUFFERS_ASSERT(value.type.enum_def);
+    auto &enum_def = *value.type.enum_def;
+    auto enum_val = enum_def.FindByValue(value.constant);
+    return enum_val ? (WrapInNameSpace(enum_def) + "." + enum_val->name)
+                    : value.constant;
+  }
+
+  // Generate enum declarations.
+  void GenEnum(const EnumDef &enum_def, std::string *code_ptr) {
+    if (enum_def.generated) return;
+
+    GenComment(enum_def.doc_comment, code_ptr, &def_comment);
+    BeginEnum(NormalizedName(enum_def), code_ptr);
+    for (auto it = enum_def.Vals().begin(); it != enum_def.Vals().end(); ++it) {
+      auto &ev = **it;
+      GenComment(ev.doc_comment, code_ptr, &def_comment, Indent);
+      EnumMember(enum_def, ev, code_ptr);
     }
 
-    std::string GenEnumDefaultValue(const FieldDef &field) const {
-      auto &value = field.value;
-      FLATBUFFERS_ASSERT(value.type.enum_def);
-      auto &enum_def = *value.type.enum_def;
-      auto enum_val = enum_def.FindByValue(value.constant);
-      return enum_val ? (WrapInNameSpace(enum_def) + "." + enum_val->name)
-                      : value.constant;
+    EndEnum(code_ptr);
+
+    if (parser_.opts.generate_object_based_api) {
+      GenEnumDef_ObjectAPI(enum_def, code_ptr);
+    }
+  }
+
+  void GenEnumDef_ObjectAPI(const EnumDef &enum_def, std::string *code_ptr) {
+    /*
+    local GameSvrRspUnion_mt = {}
+    function GameSvrRspUnion_mt:As(type)
+        if self.Type == type then
+            return self.Value
+        end
+    end
+
+    local dataTypeToClass = {}
+    for k, v in pairs(GameSvrRspUnion) do
+        dataTypeToClass[v] = require("GeneratedLua." .. k)
+    end
+    GameSvrRspUnion.__dataTypeToClass = dataTypeToClass
+
+    GameSvrRspUnion.Union = {
+        __ctor__ = function (this)
+            this.Type = 0
+            this.Value = nil
+            setmetatable(this, GameSvrRspUnion_mt)
+        end
+    }*/
+    if (!enum_def.is_union) return;
+
+    auto &code = *code_ptr;
+    string enum_name = MakeCamel(enum_def.name, true);
+
+    code += "local dataTypeToClass = {}\n";
+    for (auto it = enum_def.Vals().begin(); it != enum_def.Vals().end(); ++it) {
+      auto &ev = **it;
+      if (ev.IsZero()) continue;
+
+      auto value = enum_def.ToString(ev);
+      if (ev.union_type.base_type == BASE_TYPE_STRING)
+        code += "dataTypeToClass[" + value + "] = string\n";
+      else
+        code += "dataTypeToClass[" + value + "] = require('" +
+                GetNamespace(ev.union_type) + "')\n";
     }
 
-    // Generate enum declarations.
-    void GenEnum(const EnumDef &enum_def, std::string *code_ptr) {
-      if (enum_def.generated) return;
+    code += enum_name + ".__dataTypeToClass = dataTypeToClass\n\n";
+    code += enum_name +
+            ".Union = {\n"\
+            "\tNew = function ()\n"\
+            "\t\tlocal o = {}\n"\
+            "\t\to.Type = 0\n"\
+            "\t\to.Value = nil\n"\
+            "\t\treturn o\n"\
+            "\tend\n}\n";
+  }
 
-      GenComment(enum_def.doc_comment, code_ptr, &def_comment);
-      BeginEnum(NormalizedName(enum_def), code_ptr);
-      for (auto it = enum_def.Vals().begin(); it != enum_def.Vals().end();
-           ++it) {
-        auto &ev = **it;
-        GenComment(ev.doc_comment, code_ptr, &def_comment, Indent);
-        EnumMember(enum_def, ev, code_ptr);
-      }
-
-      EndEnum(code_ptr);
-      
-      if (parser_.opts.generate_object_based_api) {
-        GenEnumDef_ObjectAPI(enum_def, code_ptr);
-      }
+  // Returns the function name that is able to read a value of the given
+  // type.
+  std::string GenGetter(const Type &type) {
+    switch (type.base_type) {
+      case BASE_TYPE_STRING: return std::string(SelfData) + ":String(";
+      case BASE_TYPE_UNION: return std::string(SelfData) + ":Union(";
+      case BASE_TYPE_VECTOR: return GenGetter(type.VectorType());
+      default:
+        return std::string(SelfData) + ":Get(flatbuffers.N." +
+               MakeCamel(GenTypeGet(type)) + ", ";
     }
+  }
 
-    void GenEnumDef_ObjectAPI(const EnumDef &enum_def, std::string *code_ptr) {
-      /*
-      local GameSvrRspUnion_mt = {}
-      function GameSvrRspUnion_mt:As(type)
-          if self.Type == type then
-              return self.Value
-          end
-      end
+  // Returns the method name for use with add/put calls.
+  std::string GenMethod(const FieldDef &field) {
+    return IsScalar(field.value.type.base_type)
+               ? MakeCamel(GenTypeBasic(field.value.type))
+               : (IsStruct(field.value.type) ? "Struct" : "UOffsetTRelative");
+  }
 
-      local dataTypeToClass = {}
-      for k, v in pairs(GameSvrRspUnion) do
-          dataTypeToClass[v] = require("GeneratedLua." .. k)
-      end
-      GameSvrRspUnion.__dataTypeToClass = dataTypeToClass
-
-      GameSvrRspUnion.Union = {
-          __ctor__ = function (this)
-              this.Type = 0
-              this.Value = nil
-              setmetatable(this, GameSvrRspUnion_mt)
-          end
-      }*/
-      if (!enum_def.is_union)
-        return;
-
-      auto& code = *code_ptr;
-      string enum_name = MakeCamel(enum_def.name, true);
-      
-      code += "local dataTypeToClass = {}\n";
-      for (auto it = enum_def.Vals().begin(); it != enum_def.Vals().end(); ++it) {
-        auto &ev = **it;
-        if (ev.IsZero())
-          continue;
-        
-        auto value = enum_def.ToString(ev);        
-        if (ev.union_type.base_type == BASE_TYPE_STRING)
-          code += "dataTypeToClass[" + value + "] = string\n";
-        else
-          code += "dataTypeToClass[" + value + "] = require('" +
-                  GetNamespace(ev.union_type) + "')\n";
-      }
-
-      code += enum_name + ".__dataTypeToClass = dataTypeToClass\n\n";
-      code += enum_name + ".Union = {\n"\
-        "\t__ctor = function (this)\n"\
-        "\t\tthis.Type = 0\n"
-        "\t\tthis.Value = nil\n"
-        "\tend\n}\n";
-    }
-
-    // Returns the function name that is able to read a value of the given
-    // type.
-    std::string GenGetter(const Type &type) {
-      switch (type.base_type) {
-        case BASE_TYPE_STRING: return std::string(SelfData) + ":String(";
-        case BASE_TYPE_UNION: return std::string(SelfData) + ":Union(";
-        case BASE_TYPE_VECTOR: return GenGetter(type.VectorType());
-        default:
-          return std::string(SelfData) + ":Get(flatbuffers.N." +
-                 MakeCamel(GenTypeGet(type)) + ", ";
-      }
-    }
-
-    // Returns the method name for use with add/put calls.
-    std::string GenMethod(const FieldDef &field) {
-      return IsScalar(field.value.type.base_type)
-                 ? MakeCamel(GenTypeBasic(field.value.type))
-                 : (IsStruct(field.value.type) ? "Struct" : "UOffsetTRelative");
-    }
-
-    std::string GenTypeBasic(const Type &type) {
-      // clang-format off
+  std::string GenTypeBasic(const Type &type) {
+    // clang-format off
     static const char *ctypename[] = {
       #define FLATBUFFERS_TD(ENUM, IDLTYPE, \
               CTYPE, JTYPE, GTYPE, NTYPE, PTYPE, ...) \
@@ -1171,12 +1226,12 @@ class LuaGenerator : public BaseGenerator {
         FLATBUFFERS_GEN_TYPES(FLATBUFFERS_TD)
       #undef FLATBUFFERS_TD
     };
-      // clang-format on
-      return ctypename[type.base_type];
-    }
+    // clang-format on
+    return ctypename[type.base_type];
+  }
 
-    std::string GenTypeBasic(const BaseType &base_type) {
-      // clang-format off
+  std::string GenTypeBasic(const BaseType &base_type) {
+    // clang-format off
     static const char *ctypename[] = {
       #define FLATBUFFERS_TD(ENUM, IDLTYPE, \
               CTYPE, JTYPE, GTYPE, NTYPE, PTYPE, ...) \
@@ -1184,130 +1239,128 @@ class LuaGenerator : public BaseGenerator {
         FLATBUFFERS_GEN_TYPES(FLATBUFFERS_TD)
       #undef FLATBUFFERS_TD
     };
-      // clang-format on
-      return ctypename[base_type];
+    // clang-format on
+    return ctypename[base_type];
+  }
+
+  std::string GenTypePointer(const Type &type) {
+    switch (type.base_type) {
+      case BASE_TYPE_STRING: return "string";
+      case BASE_TYPE_VECTOR: return GenTypeGet(type.VectorType());
+      case BASE_TYPE_STRUCT: return type.struct_def->name;
+      case BASE_TYPE_UNION:
+        // fall through
+      default: return "*flatbuffers.Table";
+    }
+  }
+
+  std::string GenTypeGet(const Type &type) {
+    return IsScalar(type.base_type) ? GenTypeBasic(type) : GenTypePointer(type);
+  }
+
+  std::string GetNamespace(const Type &type) {
+    if (type.struct_def)
+      return type.struct_def->defined_namespace->GetFullyQualifiedName(
+          type.struct_def->name);
+
+    if (type.enum_def)
+      return type.enum_def->defined_namespace->GetFullyQualifiedName(
+          type.enum_def->name);
+
+    return "";
+  }
+
+  std::string TypeName(const FieldDef &field) {
+    return GenTypeGet(field.value.type);
+  }
+
+  std::string TypeNameWithNamespace(const FieldDef &field) {
+    return GetNamespace(field.value.type);
+  }
+
+  // Create a struct with a builder and the struct's arguments.
+  void GenStructBuilder(const StructDef &struct_def, std::string *code_ptr) {
+    BeginBuilderArgs(struct_def, code_ptr);
+    StructBuilderArgs(struct_def, "", code_ptr);
+    EndBuilderArgs(code_ptr);
+
+    StructBuilderBody(struct_def, "", code_ptr);
+    EndBuilderBody(code_ptr);
+  }
+
+  bool generate() {
+    if (!generateEnums()) return false;
+    if (!generateStructs()) return false;
+    return true;
+  }
+
+ private:
+  bool generateEnums() {
+    for (auto it = parser_.enums_.vec.begin(); it != parser_.enums_.vec.end();
+         ++it) {
+      auto &enum_def = **it;
+      std::string enumcode;
+      GenEnum(enum_def, &enumcode);
+      if (!SaveType(enum_def, enumcode, false)) return false;
+    }
+    return true;
+  }
+
+  bool generateStructs() {
+    for (auto it = parser_.structs_.vec.begin();
+         it != parser_.structs_.vec.end(); ++it) {
+      auto &struct_def = **it;
+      std::string declcode;
+      GenStruct(struct_def, &declcode);
+      if (!SaveType(struct_def, declcode, true)) return false;
+    }
+    return true;
+  }
+
+  // Begin by declaring namespace and imports.
+  void BeginFile(const std::string &name_space_name, const bool needs_imports,
+                 std::string *code_ptr) {
+    std::string &code = *code_ptr;
+    code += std::string(Comment) + FlatBuffersGeneratedWarning() + "\n\n";
+    code += std::string(Comment) + "namespace: " + name_space_name + "\n\n";
+    if (needs_imports) {
+      code += "local flatbuffers = require('flatbuffers')\n\n";
+    }
+  }
+
+  // Save out the generated code for a Lua Table type.
+  bool SaveType(const Definition &def, const std::string &classcode,
+                bool needs_imports) {
+    if (!classcode.length()) return true;
+
+    std::string namespace_dir = path_;
+    auto &namespaces = def.defined_namespace->components;
+    for (auto it = namespaces.begin(); it != namespaces.end(); ++it) {
+      if (it != namespaces.begin()) namespace_dir += kPathSeparator;
+      namespace_dir += *it;
+      // std::string init_py_filename = namespace_dir + "/__init__.py";
+      // SaveFile(init_py_filename.c_str(), "", false);
     }
 
-    std::string GenTypePointer(const Type &type) {
-      switch (type.base_type) {
-        case BASE_TYPE_STRING: return "string";
-        case BASE_TYPE_VECTOR: return GenTypeGet(type.VectorType());
-        case BASE_TYPE_STRUCT: return type.struct_def->name;
-        case BASE_TYPE_UNION:
-          // fall through
-        default: return "*flatbuffers.Table";
-      }
-    }
+    std::string code = "";
+    BeginFile(LastNamespacePart(*def.defined_namespace), needs_imports, &code);
+    code += classcode;
+    code += "\n";
+    code +=
+        "return " + NormalizedName(def) + " " + Comment + "return the module";
+    std::string filename =
+        NamespaceDir(*def.defined_namespace) + NormalizedName(def) + ".lua";
+    return SaveFile(filename.c_str(), code, false);
+  }
 
-    std::string GenTypeGet(const Type &type) {
-      return IsScalar(type.base_type) ? GenTypeBasic(type)
-                                      : GenTypePointer(type);
-    }
-
-    std::string GetNamespace(const Type &type) {
-      if (type.struct_def)
-        return type.struct_def->defined_namespace->GetFullyQualifiedName(
-            type.struct_def->name);
-
-      if (type.enum_def)
-        return type.enum_def->defined_namespace->GetFullyQualifiedName(
-            type.enum_def->name);
-
-      return "";
-    }
-
-    std::string TypeName(const FieldDef &field) {
-      return GenTypeGet(field.value.type);
-    }
-
-    std::string TypeNameWithNamespace(const FieldDef &field) {
-      return GetNamespace(field.value.type);
-    }
-
-    // Create a struct with a builder and the struct's arguments.
-    void GenStructBuilder(const StructDef &struct_def, std::string *code_ptr) {
-      BeginBuilderArgs(struct_def, code_ptr);
-      StructBuilderArgs(struct_def, "", code_ptr);
-      EndBuilderArgs(code_ptr);
-
-      StructBuilderBody(struct_def, "", code_ptr);
-      EndBuilderBody(code_ptr);
-    }
-
-    bool generate() {
-      if (!generateEnums()) return false;
-      if (!generateStructs()) return false;
-      return true;
-    }
-
-   private:
-    bool generateEnums() {
-      for (auto it = parser_.enums_.vec.begin(); it != parser_.enums_.vec.end();
-           ++it) {
-        auto &enum_def = **it;
-        std::string enumcode;
-        GenEnum(enum_def, &enumcode);
-        if (!SaveType(enum_def, enumcode, false)) return false;
-      }
-      return true;
-    }
-
-    bool generateStructs() {
-      for (auto it = parser_.structs_.vec.begin();
-           it != parser_.structs_.vec.end(); ++it) {
-        auto &struct_def = **it;
-        std::string declcode;
-        GenStruct(struct_def, &declcode);
-        if (!SaveType(struct_def, declcode, true)) return false;
-      }
-      return true;
-    }
-
-    // Begin by declaring namespace and imports.
-    void BeginFile(const std::string &name_space_name, const bool needs_imports,
-                   std::string *code_ptr) {
-      std::string &code = *code_ptr;
-      code += std::string(Comment) + FlatBuffersGeneratedWarning() + "\n\n";
-      code += std::string(Comment) + "namespace: " + name_space_name + "\n\n";
-      if (needs_imports) {
-        code += "local flatbuffers = require('flatbuffers')\n\n";
-      }
-    }
-
-    // Save out the generated code for a Lua Table type.
-    bool SaveType(const Definition &def, const std::string &classcode,
-                  bool needs_imports) {
-      if (!classcode.length()) return true;
-
-      std::string namespace_dir = path_;
-      auto &namespaces = def.defined_namespace->components;
-      for (auto it = namespaces.begin(); it != namespaces.end(); ++it) {
-        if (it != namespaces.begin()) namespace_dir += kPathSeparator;
-        namespace_dir += *it;
-        // std::string init_py_filename = namespace_dir + "/__init__.py";
-        // SaveFile(init_py_filename.c_str(), "", false);
-      }
-
-      std::string code = "";
-      BeginFile(LastNamespacePart(*def.defined_namespace), needs_imports,
-                &code);
-      code += classcode;
-      code += "\n";
-      code +=
-          "return " + NormalizedName(def) + " " + Comment + "return the module";
-      std::string filename =
-          NamespaceDir(*def.defined_namespace) + NormalizedName(def) + ".lua";
-      return SaveFile(filename.c_str(), code, false);
-    }
-
-   private:
-    std::unordered_set<std::string> keywords_;
-  };
+ private:
+  std::unordered_set<std::string> keywords_;
+};
 
 }  // namespace lua
 
-  bool GenerateLua(const Parser &parser, const std::string &path,
-                   const std::string &file_name) {
+bool GenerateLua(const Parser &parser, const std::string &path,
+                 const std::string &file_name) {
   lua::LuaGenerator generator(parser, path, file_name);
   return generator.generate();
 }
